@@ -514,7 +514,7 @@ public:
         }
     }
     
-    // Перегруженные методы для работы с time_point
+    
     void revert_to_snapshot(const std::string& table_name, const std::chrono::system_clock::time_point& timestamp) {
         std::string timestamp_str = timepoint_to_string(timestamp);
         revert_to_snapshot(table_name, timestamp_str);
