@@ -1,0 +1,13 @@
+CREATE DATABASE test_db;
+USE test_db;
+CREATE TABLE users (id INT INDEXED, name STRING NOT_NULL, age INT);
+INSERT INTO users (id, name, age) VALUE (1, "Alice", 25), (2, "Bob", 30), (3, "Charlie", 35);
+SELECT * FROM users;
+SELECT name, age FROM users WHERE id == 2;
+SELECT * FROM users WHERE age BETWEEN 25 AND 35;
+SELECT * FROM users WHERE name LIKE "A.*";
+UPDATE users SET age = 26 WHERE name == "Alice";
+DELETE FROM users WHERE age > 30;
+SELECT COUNT(id) FROM users;
+SELECT SUM(age) FROM users;
+SELECT AVG(age) FROM users;
