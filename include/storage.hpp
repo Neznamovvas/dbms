@@ -13,6 +13,7 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -26,13 +27,15 @@ namespace fs = std::filesystem;
 
 namespace dbms {
 
+inline thread_local std::string tls_current_db;
+
 class StorageManager {
 private:
     std::string data_dir_;
     std::map<std::string, std::map<std::string, std::vector<Row>>> data_;
     std::map<std::string, std::map<std::string, TableSchema>> schemas_;
     std::set<std::string> databases_;
-    std::string current_db_;
+    mutable std::mutex storage_mutex_;
     
     std::map<std::string, std::map<std::string, std::vector<std::pair<std::string, std::vector<Row>>>>> snapshots_;
     
@@ -505,19 +508,19 @@ public:
     }
     
     void create_snapshot(const std::string& table_name) {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
         auto timestamp = get_current_timestamp();
-        const auto& rows = data_[current_db_][table_name];
+        const auto& rows = data_[tls_current_db][table_name];
         
-        save_snapshot_to_disk(current_db_, table_name, timestamp, rows);
+        save_snapshot_to_disk(tls_current_db, table_name, timestamp, rows);
         
-        snapshots_[current_db_][table_name].push_back({timestamp, rows});
+        snapshots_[tls_current_db][table_name].push_back({timestamp, rows});
         
-        if (snapshots_[current_db_][table_name].size() > 10) {
-            snapshots_[current_db_][table_name].erase(snapshots_[current_db_][table_name].begin());
+        if (snapshots_[tls_current_db][table_name].size() > 10) {
+            snapshots_[tls_current_db][table_name].erase(snapshots_[tls_current_db][table_name].begin());
         }
     }
     
@@ -533,12 +536,12 @@ public:
     }
     
     void revert_to_snapshot(const std::string& table_name, const std::string& timestamp_str) {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
         auto target_time = string_to_timepoint(timestamp_str);
-        auto& snaps = snapshots_[current_db_][table_name];
+        auto& snaps = snapshots_[tls_current_db][table_name];
         
         int best_index = -1;
         std::string best_timestamp;
@@ -552,7 +555,7 @@ public:
         }
         
         if (best_index == -1) {
-            std::string snapshot_dir = get_snapshot_dir(current_db_, table_name);
+            std::string snapshot_dir = get_snapshot_dir(tls_current_db, table_name);
             if (directory_exists(snapshot_dir)) {
                 std::vector<std::string> snapshots_on_disk;
                 
@@ -570,9 +573,9 @@ public:
                     std::sort(snapshots_on_disk.begin(), snapshots_on_disk.end());
                     best_timestamp = snapshots_on_disk.back();
                     
-                    auto rows = load_snapshot_from_disk(current_db_, table_name, best_timestamp);
-                    data_[current_db_][table_name] = rows;
-                    save_table(current_db_, table_name);
+                    auto rows = load_snapshot_from_disk(tls_current_db, table_name, best_timestamp);
+                    data_[tls_current_db][table_name] = rows;
+                    save_table(tls_current_db, table_name);
                     
                     std::cout << "Reverted " << table_name << " to snapshot from disk: " << best_timestamp << std::endl;
                     return;
@@ -582,20 +585,20 @@ public:
             throw std::runtime_error("No snapshot found before timestamp: " + timestamp_str);
         }
         
-        data_[current_db_][table_name] = snaps[best_index].second;
-        save_table(current_db_, table_name);
+        data_[tls_current_db][table_name] = snaps[best_index].second;
+        save_table(tls_current_db, table_name);
         
         std::cout << "Reverted " << table_name << " to snapshot: " << best_timestamp << std::endl;
     }
     
     void revert_all_tables(const std::string& timestamp_str) {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
         int reverted_count = 0;
         
-        for (const auto& [table_name, _] : schemas_[current_db_]) {
+        for (const auto& [table_name, _] : schemas_[tls_current_db]) {
             try {
                 revert_to_snapshot(table_name, timestamp_str);
                 reverted_count++;
@@ -620,12 +623,12 @@ public:
     }
     
     void list_snapshots(const std::string& table_name) {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             std::cout << "No database selected" << std::endl;
             return;
         }
         
-        std::string snapshot_dir = get_snapshot_dir(current_db_, table_name);
+        std::string snapshot_dir = get_snapshot_dir(tls_current_db, table_name);
         if (!directory_exists(snapshot_dir)) {
             std::cout << "No snapshots for table: " << table_name << std::endl;
             return;
@@ -642,6 +645,7 @@ public:
     }
     
     void create_database(const std::string& name) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
         if (databases_.count(name)) {
             throw std::runtime_error("Database already exists: " + name);
         }
@@ -658,6 +662,7 @@ public:
     }
     
     void drop_database(const std::string& name) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
         if (!databases_.count(name)) {
             throw std::runtime_error("Database does not exist: " + name);
         }
@@ -672,27 +677,29 @@ public:
         schemas_.erase(name);
         snapshots_.erase(name);
         
-        if (current_db_ == name) {
-            current_db_.clear();
+        if (tls_current_db == name) {
+            tls_current_db.clear();
         }
         
         std::cout << "Database '" << name << "' dropped from memory" << std::endl;
     }
     
     void use_database(const std::string& name) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
         if (!databases_.count(name)) {
             throw std::runtime_error("Database does not exist: " + name);
         }
-        current_db_ = name;
-        std::cout << "Now using database: " << current_db_ << std::endl;
+        tls_current_db = name;
+        std::cout << "Now using database: " << tls_current_db << std::endl;
     }
     
     void create_table(const std::string& name, const std::vector<Column>& columns) {
-        if (current_db_.empty()) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected. Use USE <database> first");
         }
         
-        if (schemas_[current_db_].count(name)) {
+        if (schemas_[tls_current_db].count(name)) {
             throw std::runtime_error("Table already exists: " + name);
         }
         
@@ -704,13 +711,13 @@ public:
             schema.column_index[columns[i].name] = i;
         }
         
-        schemas_[current_db_][name] = schema;
-        data_[current_db_][name] = {};
+        schemas_[tls_current_db][name] = schema;
+        data_[tls_current_db][name] = {};
         
-        save_schema(current_db_, name);
-        save_table(current_db_, name);
+        save_schema(tls_current_db, name);
+        save_table(tls_current_db, name);
         
-        std::string snapshot_dir = get_snapshot_dir(current_db_, name);
+        std::string snapshot_dir = get_snapshot_dir(tls_current_db, name);
         create_directory(snapshot_dir);
         
         create_snapshot(name);
@@ -719,19 +726,20 @@ public:
     }
     
     void drop_table(const std::string& name) {
-        if (current_db_.empty()) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
-        if (!schemas_[current_db_].count(name)) {
+        if (!schemas_[tls_current_db].count(name)) {
             throw std::runtime_error("Table does not exist: " + name);
         }
         
-        schemas_[current_db_].erase(name);
-        data_[current_db_].erase(name);
+        schemas_[tls_current_db].erase(name);
+        data_[tls_current_db].erase(name);
         
-        std::string table_path = get_table_path(current_db_, name);
-        std::string schema_path = get_schema_path(current_db_, name);
+        std::string table_path = get_table_path(tls_current_db, name);
+        std::string schema_path = get_schema_path(tls_current_db, name);
         
         if (file_exists(table_path)) {
             std::remove(table_path.c_str());
@@ -744,11 +752,11 @@ public:
     }
     
     const TableSchema& get_schema(const std::string& table_name) const {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
-        auto it = schemas_.find(current_db_);
+        auto it = schemas_.find(tls_current_db);
         if (it == schemas_.end()) {
             throw std::runtime_error("Database not found");
         }
@@ -762,18 +770,19 @@ public:
     }
     
     std::vector<Row>& get_table_data(const std::string& table_name) {
-        if (current_db_.empty()) {
+        std::lock_guard<std::mutex> lock(storage_mutex_);
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
-        return data_[current_db_][table_name];
+        return data_[tls_current_db][table_name];
     }
     
     const std::vector<Row>& get_table_data(const std::string& table_name) const {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             throw std::runtime_error("No database selected");
         }
         
-        auto it = data_.find(current_db_);
+        auto it = data_.find(tls_current_db);
         if (it == data_.end()) {
             throw std::runtime_error("Database not found");
         }
@@ -786,7 +795,7 @@ public:
         return it2->second;
     }
     
-    std::string get_current_db() const { return current_db_; }
+    std::string get_current_db() const { return tls_current_db; }
     const std::set<std::string>& get_databases() const { return databases_; }
     
     void save_all() {
@@ -807,13 +816,13 @@ public:
     }
     
     void list_tables() const {
-        if (current_db_.empty()) {
+        if (tls_current_db.empty()) {
             std::cout << "No database selected" << std::endl;
             return;
         }
         
-        std::cout << "Tables in '" << current_db_ << "': ";
-        for (const auto& [table_name, _] : schemas_.at(current_db_)) {
+        std::cout << "Tables in '" << tls_current_db << "': ";
+        for (const auto& [table_name, _] : schemas_.at(tls_current_db)) {
             std::cout << table_name << " ";
         }
         std::cout << std::endl;

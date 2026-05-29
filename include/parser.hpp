@@ -2,6 +2,7 @@
 #define DBMS_PARSER_HPP
 
 #include "types.hpp"
+#include "auth/auth_types.hpp"
 #include <string>
 #include <vector>
 #include <regex>
@@ -134,7 +135,18 @@ public:
             DELETE_OP,     
             REVERT_OP,
             STATS_CMD,
-            ROTATE_CMD,     
+            ROTATE_CMD,
+            LOGIN,
+            SET_TOKEN,
+            CREATE_USER,
+            DROP_USER,
+            CREATE_GROUP,
+            DROP_GROUP,
+            ADD_USER_TO_GROUP,
+            REMOVE_USER_FROM_GROUP,
+            GRANT,
+            REVOKE,
+            SHOW_GRANTS,
             UNKNOWN 
         } type = UNKNOWN;
         
@@ -153,6 +165,16 @@ public:
         
         std::string aggregate_func;
         std::string aggregate_col;
+
+        // Auth / RBAC
+        std::string auth_username;
+        std::string auth_password;
+        std::string auth_token;
+        std::string auth_group;
+        uint8_t grant_mask = 0;
+        std::string grant_target;
+        std::string grant_principal;
+        bool grant_on_table = false;
     };
     
     ParsedQuery parse(const std::string& query) {
@@ -172,6 +194,13 @@ public:
             } else if (type == "table") {
                 result.type = ParsedQuery::CREATE_TABLE;
                 parse_create_table(result);
+            } else if (type == "user") {
+                result.type = ParsedQuery::CREATE_USER;
+                result.auth_username = parse_identifier();
+                result.auth_password = parse_string_literal();
+            } else if (type == "group") {
+                result.type = ParsedQuery::CREATE_GROUP;
+                result.auth_group = parse_identifier();
             }
         }
         else if (command == "drop") {
@@ -182,6 +211,12 @@ public:
             } else if (type == "table") {
                 result.type = ParsedQuery::DROP_TABLE;
                 result.table_name = parse_identifier();
+            } else if (type == "user") {
+                result.type = ParsedQuery::DROP_USER;
+                result.auth_username = parse_identifier();
+            } else if (type == "group") {
+                result.type = ParsedQuery::DROP_GROUP;
+                result.auth_group = parse_identifier();
             }
         }
         else if (command == "use") {
@@ -213,6 +248,53 @@ public:
         }
         else if (command == "rotate") {
             result.type = ParsedQuery::ROTATE_CMD;
+        }
+        else if (command == "login") {
+            result.type = ParsedQuery::LOGIN;
+            result.auth_username = parse_identifier();
+            result.auth_password = parse_string_literal();
+        }
+        else if (command == "set") {
+            std::string sub = parse_identifier();
+            if (sub == "token") {
+                result.type = ParsedQuery::SET_TOKEN;
+                result.auth_token = parse_jwt_token();
+            }
+        }
+        else if (command == "show") {
+            std::string sub = parse_identifier();
+            if (sub == "grants") {
+                result.type = ParsedQuery::SHOW_GRANTS;
+                parse_show_grants(result);
+            }
+        }
+        else if (command == "grant") {
+            result.type = ParsedQuery::GRANT;
+            parse_grant_revoke(result, false);
+        }
+        else if (command == "revoke") {
+            result.type = ParsedQuery::REVOKE;
+            parse_grant_revoke(result, true);
+        }
+        else if (command == "add") {
+            std::string u = parse_identifier();
+            std::string to = parse_identifier();
+            std::string group_kw = parse_identifier();
+            if (!u.empty() && to == "to" && group_kw == "group") {
+                result.type = ParsedQuery::ADD_USER_TO_GROUP;
+                result.auth_username = u;
+                result.auth_group = parse_identifier();
+            }
+        }
+        else if (command == "remove") {
+            std::string u = parse_identifier();
+            std::string from = parse_identifier();
+            std::string group_kw = parse_identifier();
+            if (!u.empty() && from == "from" && group_kw == "group") {
+                result.type = ParsedQuery::REMOVE_USER_FROM_GROUP;
+                result.auth_username = u;
+                result.auth_group = parse_identifier();
+            }
         }
         
         return result;
@@ -528,6 +610,106 @@ private:
         }
         
         return cond;
+    }
+
+    std::string parse_jwt_token() {
+        skip_whitespace();
+        std::string token;
+        while (pos_ < input_.size()) {
+            char c = input_[pos_];
+            if (std::isspace(static_cast<unsigned char>(c)) || c == ';') {
+                break;
+            }
+            token += c;
+            ++pos_;
+        }
+        return token;
+    }
+
+    void parse_show_grants(ParsedQuery& result) {
+        std::string for_kw = parse_identifier();
+        if (for_kw != "for") {
+            throw std::runtime_error("Expected FOR in SHOW GRANTS");
+        }
+        std::string user_kw = parse_identifier();
+        if (user_kw != "user") {
+            throw std::runtime_error("Expected USER in SHOW GRANTS");
+        }
+        result.auth_username = parse_identifier();
+        std::string on_kw = parse_identifier();
+        if (on_kw != "on") {
+            throw std::runtime_error("Expected ON DATABASE in SHOW GRANTS");
+        }
+        std::string db_kw = parse_identifier();
+        if (db_kw != "database") {
+            throw std::runtime_error("Expected DATABASE in SHOW GRANTS");
+        }
+        result.database_name = parse_identifier();
+    }
+
+    void parse_grant_revoke(ParsedQuery& result, bool /*is_revoke*/) {
+        result.grant_mask = 0;
+        while (true) {
+            std::string priv = parse_identifier();
+            if (priv.empty()) {
+                break;
+            }
+            uint8_t m = auth::parse_privilege_name(priv);
+            if (m == 0) {
+                pos_ -= priv.size();
+                break;
+            }
+            result.grant_mask |= m;
+            skip_whitespace();
+            if (pos_ < input_.size() && input_[pos_] == ',') {
+                ++pos_;
+                continue;
+            }
+            break;
+        }
+
+        std::string on_kw = parse_identifier();
+        if (on_kw != "on") {
+            throw std::runtime_error("Expected ON in GRANT/REVOKE");
+        }
+        std::string scope = parse_identifier();
+        if (scope == "database") {
+            result.grant_on_table = false;
+            result.database_name = parse_identifier();
+        } else if (scope == "table") {
+            result.grant_on_table = true;
+            std::string qualified = parse_identifier();
+            auto dot = qualified.find('.');
+            if (dot == std::string::npos) {
+                throw std::runtime_error("Expected db.table in GRANT ON TABLE");
+            }
+            result.database_name = qualified.substr(0, dot);
+            result.table_name = qualified.substr(dot + 1);
+        } else {
+            throw std::runtime_error("Expected DATABASE or TABLE in GRANT");
+        }
+
+        std::string to_kw = parse_identifier();
+        if (to_kw != "to") {
+            throw std::runtime_error("Expected TO in GRANT/REVOKE");
+        }
+        std::string target = parse_identifier();
+        if (target == "default") {
+            result.grant_target = "default";
+            std::string for_kw = parse_identifier();
+            if (for_kw != "for") {
+                throw std::runtime_error("Expected FOR DEFAULT");
+            }
+            result.grant_principal = parse_identifier();
+        } else if (target == "user") {
+            result.grant_principal = "user";
+            result.grant_target = parse_identifier();
+        } else if (target == "group") {
+            result.grant_principal = "group";
+            result.grant_target = parse_identifier();
+        } else {
+            throw std::runtime_error("Expected USER, GROUP or DEFAULT in GRANT");
+        }
     }
 };
 

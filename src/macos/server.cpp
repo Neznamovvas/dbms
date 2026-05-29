@@ -7,6 +7,9 @@
 #include "../../include/logger.hpp"
 #include "../../include/telemetry.hpp"
 #include "../../include/executor.hpp"
+#include "../../include/parser.hpp"
+#include "../../include/auth/auth_service.hpp"
+#include "../../include/auth/auth_types.hpp"
 #include <iostream>
 #include <string>
 #include <thread>
@@ -15,6 +18,7 @@
 #include <ctime>
 
 using namespace dbms;
+using namespace dbms::auth;
 
 const int BUFFER_SIZE = 65536;
 
@@ -24,9 +28,10 @@ private:
     int server_socket_;
     std::atomic<bool> running_;
     AccessLogger logger_;
-    TelemetryCollector telemetry_; // собирает метрики
-    TelemetryDisplay telemetry_display_; // выводит метрики
+    TelemetryCollector telemetry_;
+    TelemetryDisplay telemetry_display_;
     Executor executor_;
+    AuthService auth_;
 
 public:
     LoggedDBServer(int port = 8080, const std::string& log_file = "access.log",
@@ -37,14 +42,14 @@ public:
           logger_(log_file, true, LogLevel::L_INFO),
           telemetry_(node_id.empty() ? ("node-" + std::to_string(port)) : node_id),
           telemetry_display_(telemetry_) {
-        // подключаем телеметрию
         TelemetryRegistry::instance().register_node(&telemetry_);
         std::cout << "Logging to: " << log_file << std::endl;
         std::cout << "Telemetry node: " << telemetry_.node_id() << std::endl;
+        std::cout << "Auth: LOGIN / SET TOKEN (once per session). Default admin/admin on first run." << std::endl;
     }
 
     ~LoggedDBServer() {
-        telemetry_display_.stop(); // при окончании работы заканичваем телеметрию
+        telemetry_display_.stop();
         TelemetryRegistry::instance().unregister_node(telemetry_.node_id());
         if (server_socket_ >= 0) {
             close(server_socket_);
@@ -62,13 +67,13 @@ public:
         std::cout << "Telemetry: TELEMETRY | TELEMETRY CLUSTER" << std::endl;
         std::cout << "Rotate log: ROTATE" << std::endl;
 
-        telemetry_display_.start(running_); // запускаем дисплей
-        accept_clients(); // начинаем принимать клиентов
+        telemetry_display_.start(running_);
+        accept_clients();
     }
 
     void stop() {
         running_ = false;
-        telemetry_display_.stop(); // останавливаем дисплей
+        telemetry_display_.stop();
         if (server_socket_ >= 0) {
             close(server_socket_);
             server_socket_ = -1;
@@ -76,7 +81,6 @@ public:
     }
 
 private:
-    // создаём tcp сокет
     void create_socket() {
         server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
         if (server_socket_ < 0) {
@@ -131,17 +135,16 @@ private:
 
     void handle_client(int client_socket, const std::string& client_id, const std::string& handler_id) {
         char buffer[BUFFER_SIZE];
+        ClientSession session;
 
         while (running_) {
-            memset(buffer, 0, sizeof(buffer)); // очищаем буффер
+            memset(buffer, 0, sizeof(buffer));
 
-            // получаем сообщение
             ssize_t bytes = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
             if (bytes <= 0) {
                 break;
             }
 
-            // переделываем буффер в строку
             std::string query(buffer);
             if (!query.empty() && query.back() == '\n') {
                 query.pop_back();
@@ -155,29 +158,51 @@ private:
             RequestTelemetryScope telemetry_scope(internal_cmd ? nullptr : &telemetry_);
 
             int status_code = 200;
-            std::string response; // ответ клиенту
+            std::string response;
             std::string error_message;
 
             try {
-                if (admin_cmd == "TELEMETRY") {
-                    response = telemetry_.to_json();
-                } else if (admin_cmd == "TELEMETRY CLUSTER") {
-                    response = TelemetryRegistry::instance().cluster_snapshot().dump();
-                } else if (admin_cmd == "STATS") {
-                    response = logger_.get_stats();
-                } else if (admin_cmd == "ROTATE") {
-                    logger_.rotate();
-                    json j;
-                    j["status"] = "success";
-                    j["message"] = "Log rotated";
-                    response = j.dump();
+                SQLParser parser;
+                auto parsed = parser.parse(query);
+
+                if (auth_.is_auth_command(parsed.type)) {
+                    response = auth_.handle_auth_command(parsed, session).dump();
+                } else if (!admin_cmd.empty()) {
+                    if (!auth_.require_auth(session)) {
+                        throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
+                    }
+                    if (!auth_.checker().is_superuser(session.username)) {
+                        throw std::runtime_error("Permission denied: admin required");
+                    }
+                    if (admin_cmd == "TELEMETRY") {
+                        response = telemetry_.to_json();
+                    } else if (admin_cmd == "TELEMETRY CLUSTER") {
+                        response = TelemetryRegistry::instance().cluster_snapshot().dump();
+                    } else if (admin_cmd == "STATS") {
+                        response = logger_.get_stats();
+                    } else if (admin_cmd == "ROTATE") {
+                        logger_.rotate();
+                        json j;
+                        j["status"] = "success";
+                        j["message"] = "Log rotated";
+                        response = j.dump();
+                    }
                 } else {
-                    auto result = executor_.execute(query);
+                    if (!auth_.require_auth(session)) {
+                        throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
+                    }
+                    auto result = executor_.execute(query, session, auth_.checker());
                     response = result.to_json();
                 }
             } catch (const std::exception& e) {
                 status_code = 500;
                 error_message = e.what();
+                if (error_message.find("Authentication required") != std::string::npos ||
+                    error_message.find("Invalid") != std::string::npos && error_message.find("token") != std::string::npos) {
+                    status_code = 401;
+                } else if (error_message.find("Permission denied") != std::string::npos) {
+                    status_code = 403;
+                }
                 json j;
                 j["error"] = e.what();
                 response = j.dump();
@@ -188,7 +213,7 @@ private:
             } else {
                 query_logger.error(error_message, status_code);
             }
-            telemetry_scope.finish(status_code); // тут и записываем телеметрию
+            telemetry_scope.finish(status_code);
 
             send_response(client_socket, response);
         }

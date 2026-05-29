@@ -16,6 +16,29 @@ private:
     int sock_;
     std::string server_ip_;
     int port_;
+    std::string session_token_;
+    bool token_sent_ = false;
+
+    void maybe_apply_token(const std::string& response) {
+        const std::string key = "\"token\":\"";
+        const size_t pos = response.find(key);
+        if (pos == std::string::npos) {
+            return;
+        }
+        const size_t start = pos + key.size();
+        const size_t end = response.find('"', start);
+        if (end == std::string::npos) {
+            return;
+        }
+        session_token_ = response.substr(start, end - start);
+        if (!token_sent_ && !session_token_.empty()) {
+            const std::string set_cmd = "SET TOKEN " + session_token_;
+            std::cout << "(auto) SET TOKEN for session" << std::endl;
+            std::string ack = send_query(set_cmd);
+            std::cout << ack << std::endl;
+            token_sent_ = true;
+        }
+    }
 
 public:
     DBMSClient(const std::string& server_ip = "127.0.0.1", int port = 8080)
@@ -114,6 +137,7 @@ public:
             if (line.find(';') != std::string::npos) {
                 std::string response = send_query(buffer);
                 std::cout << response << std::endl;
+                maybe_apply_token(response);
                 buffer.clear();
             }
         }
@@ -151,6 +175,7 @@ public:
             if (c == ';') {
                 std::string response = send_query(trim_query(current));
                 std::cout << response << std::endl;
+                maybe_apply_token(response);
                 current.clear();
             }
         }

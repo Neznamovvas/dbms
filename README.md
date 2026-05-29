@@ -14,7 +14,6 @@
 
 | Платформа        | Исходники сервера/клиента   |
 |------------------|-----------------------------|
-| Windows          | `src/server.cpp`, `src/client.cpp` (Winsock) |
 | macOS, Linux     | `src/macos/server.cpp`, `src/macos/client.cpp` (POSIX-сокеты) |
 
 Платформа выбирается автоматически в `cmake/PlatformSources.cmake`.
@@ -27,10 +26,6 @@
 # Обычная сборка
 cmake -S . -B build
 cmake --build build
-
-# С пресетом (минимальная версия macOS 11.0, см. cmake/macos.cmake)
-cmake -S . -B build-macos -C cmake/macos.cmake
-cmake --build build-macos
 ```
 
 ### Запуск
@@ -66,57 +61,53 @@ cmake --build build
 
 ---
 
-## Windows
-
-Нужен **MinGW-w64** (рекомендуется) или **MSVC** с CMake.
-
-### MinGW (рекомендуется)
-
-В **MSYS2 MinGW64** или аналоге:
-
-```bash
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja git
-
-cmake -S . -B build-win -G "MinGW Makefiles"
-cmake --build build-win
-```
-
-Запуск:
-
-```cmd
-build-win\server.exe
-build-win\client.exe script.txt
-```
-
-### MSVC
-
-Из **x64 Native Tools Command Prompt for VS**:
-
-```cmd
-cmake -S . -B build-msvc -A x64
-cmake --build build-msvc --config Release
-
-build-msvc\Release\server.exe
-build-msvc\Release\client.exe script.txt
-```
-
-Параметры сервера: `server.exe [порт] [файл_лога]` (по умолчанию `8080` и `access.log`).
-
----
-
 ## Пример сценария
 
 В корне репозитория есть `script.txt`. Сначала запустите сервер, затем клиент:
 
 ```bash
 ./build/client script.txt        # macOS / Linux
-build-win\client.exe script.txt  # Windows
 ```
 
 В интерактивном режиме вводите SQL с `;` в конце строки; для выхода: `exit;`.
 
+## Аутентификация и RBAC
+
+Подробности реализации: [docs/rbac-auth.md](docs/rbac-auth.md).
+
+При первом запуске создаётся пользователь **`admin`** с паролем **`admin`**.
+
+1. Войти: `LOGIN admin "admin";` — в ответе JWT.
+2. Один раз за TCP-сессию: `SET TOKEN <jwt>;` (интерактивный клиент отправляет это автоматически после `LOGIN`).
+3. Далее — обычные SQL-запросы (нужны права на операцию).
+
+### Управление пользователями и группами (суперпользователь)
+
+```sql
+CREATE USER bob "password";
+DROP USER bob;
+CREATE GROUP editors;
+DROP GROUP editors;
+ADD USER bob TO GROUP editors;
+REMOVE USER bob FROM GROUP editors;
+```
+
+### Права на базы и таблицы
+
+```sql
+GRANT READ, WRITE ON DATABASE mydb TO DEFAULT FOR USERS;
+GRANT READ ON TABLE mydb.users TO USER alice;
+GRANT CREATE_TABLE ON DATABASE mydb TO GROUP editors;
+REVOKE WRITE ON TABLE mydb.users FROM USER bob;
+SHOW GRANTS FOR USER alice ON DATABASE mydb;
+```
+
+Привилегии: `READ`, `WRITE`, `CREATE_TABLE`, `DROP_TABLE`, `DROP_DB`, `CONNECT`, `ADMIN`.
+
+Служебные команды (`TELEMETRY`, `STATS`, `ROTATE`) требуют роль администратора (суперпользователь или группа `admin`).
+
 ## Устранение неполадок
 
 - **Порт занят** — укажите другой: `./build/server 9000`
-- **Старая БД в `data/`** — удалите каталог для чистого старта: `rm -rf data` (macOS/Linux) или `rmdir /s data` (Windows)
+- **Старая БД в `data/`** — удалите каталог для чистого старта: `rm -rf data` (macOS/Linux)
 - **Первая конфигурация CMake долго идёт** — скачивается nlohmann/json; нужен доступ в интернет

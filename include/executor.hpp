@@ -5,6 +5,8 @@
 #include "btree.hpp"
 #include "parser.hpp"
 #include "string_pool.hpp"
+#include "auth/auth_types.hpp"
+#include "auth/permissions.hpp"
 #include <regex>
 // #include <nlohmann/json.hpp>
 #include "../include/json.hpp"
@@ -193,12 +195,34 @@ private:
 public:
     Executor() : storage_() {}
     
-    QueryResult execute(const std::string& query) {
-        
-        
+    QueryResult execute(const std::string& query, const auth::ClientSession& session,
+                        auth::PermissionChecker& permissions) {
         SQLParser parser;
         auto parsed = parser.parse(query);
-        
+
+        if (parsed.type == SQLParser::ParsedQuery::UNKNOWN) {
+            throw std::runtime_error("Unknown query");
+        }
+
+        if (session.username != "__internal__" &&
+            !permissions.check_query(session.username, parsed, storage_.get_current_db())) {
+            throw std::runtime_error("Permission denied");
+        }
+
+        return execute_parsed(parsed);
+    }
+
+    QueryResult execute(const std::string& query) {
+        auth::ClientSession session;
+        session.username = "__internal__";
+        session.authenticated = true;
+        session.token_set = true;
+        auth::AccountStore store("data/_auth");
+        auth::PermissionChecker permissions(store);
+        return execute(query, session, permissions);
+    }
+
+    QueryResult execute_parsed(const SQLParser::ParsedQuery& parsed) {
         switch (parsed.type) {
             case SQLParser::ParsedQuery::CREATE_DB:
                 execute_create_database(parsed);
@@ -241,7 +265,7 @@ public:
                 throw std::runtime_error("Unknown query type");
         }
     }
-    
+
 private:
     void execute_create_database(const SQLParser::ParsedQuery& query) {
         storage_.create_database(query.database_name);
