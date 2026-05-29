@@ -13,7 +13,8 @@
 #include <map>
 #include <random>
 #include <atomic>
-#include <nlohmann/json.hpp>
+// #include <nlohmann/json.hpp>
+#include "../include/json.hpp"
 
 using json = nlohmann::json;
 

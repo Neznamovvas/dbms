@@ -48,11 +48,11 @@ private:
     
     void create_directory(const std::string& path) {
         if (!directory_exists(path)) {
-            #ifdef _WIN32
-                mkdir(path.c_str());
-            #else
-                mkdir(path.c_str(), 0755);
-            #endif
+            std::error_code ec;
+            fs::create_directories(path, ec);
+            if (ec) {
+                std::cerr << "Warning: Cannot create directory " << path << ": " << ec.message() << std::endl;
+            }
         }
     }
     
@@ -79,7 +79,8 @@ private:
         
         std::tm* tm = std::localtime(&time_t);
         char buffer[32];
-        strftime(buffer, sizeof(buffer), "%Y.%m.%d-%H:%M:%S", tm);
+        // Без ':' в имени — на macOS двоеточие запрещено в именах файлов (snapshots)
+        strftime(buffer, sizeof(buffer), "%Y.%m.%d-%H-%M-%S", tm);
         
         std::stringstream ss;
         ss << buffer << "." << std::setw(3) << std::setfill('0') << ms.count();
@@ -90,9 +91,15 @@ private:
         std::tm tm = {};
         int ms;
         
-        sscanf(timestamp.c_str(), "%d.%d.%d-%d:%d:%d.%d",
-               &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-               &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms);
+        if (timestamp.find(':') != std::string::npos) {
+            sscanf(timestamp.c_str(), "%d.%d.%d-%d:%d:%d.%d",
+                   &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                   &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms);
+        } else {
+            sscanf(timestamp.c_str(), "%d.%d.%d-%d-%d-%d.%d",
+                   &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                   &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms);
+        }
         
         tm.tm_year -= 1900;
         tm.tm_mon -= 1;

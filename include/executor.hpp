@@ -6,7 +6,8 @@
 #include "parser.hpp"
 #include "string_pool.hpp"
 #include <regex>
-#include <nlohmann/json.hpp>
+// #include <nlohmann/json.hpp>
+#include "../include/json.hpp"
 
 using json = nlohmann::json;
 
@@ -343,7 +344,8 @@ private:
             
             Row result_row;
             
-            if (query.select_all) {
+            // Агрегаты (SUM/AVG) читают values по индексу схемы — нужна полная строка
+            if (query.select_all || !query.aggregate_func.empty()) {
                 result_row = rows[i];
             } else {
                 for (const auto& col_name : query.select_columns) {
