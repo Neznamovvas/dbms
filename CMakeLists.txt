@@ -11,16 +11,7 @@ if(MINGW)
     add_definitions(-D_WIN32_WINNT=0x0A00)
 endif()
 
-# nlohmann/json
-include(FetchContent)
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
-
-set(COMMON_LIBS nlohmann_json::nlohmann_json)
+set(COMMON_LIBS "")
 
 if(WIN32)
     if(MINGW)

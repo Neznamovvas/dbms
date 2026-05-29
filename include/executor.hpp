@@ -21,7 +21,7 @@ private:
     
     void rebuild_index(const std::string& table_name, const Column& col) {
         if (!col.modifiers.indexed) return;
-        
+
         const auto& rows = storage_.get_table_data(table_name);
         auto current_db = storage_.get_current_db();
         auto schema = storage_.get_schema(table_name);
@@ -45,6 +45,21 @@ private:
                     idx->insert(rows[i].get_string(col_idx), i);
                 }
             }
+        }
+    }
+
+    void ensure_index(const std::string& table_name, const Column& col) {
+        if (!col.modifiers.indexed) return;
+
+        const auto current_db = storage_.get_current_db();
+        const std::string key = table_name + "_" + col.name;
+
+        if (col.type == ColumnType::INT) {
+            if (!int_indices_[current_db][key]) {
+                rebuild_index(table_name, col);
+            }
+        } else if (!str_indices_[current_db][key]) {
+            rebuild_index(table_name, col);
         }
     }
     
@@ -139,10 +154,12 @@ private:
         
         if (cond->op == Condition::Op::EQ) {
             if (col.type == ColumnType::INT && std::holds_alternative<int>(cond->right_value)) {
+                ensure_index(schema.name, col);
                 auto& idx = int_indices_[current_db][schema.name + "_" + col.name];
                 auto res = idx->find(std::get<int>(cond->right_value));
                 if (res) return {*res};
             } else if (col.type == ColumnType::STRING && std::holds_alternative<StringRef>(cond->right_value)) {
+                ensure_index(schema.name, col);
                 auto& idx = str_indices_[current_db][schema.name + "_" + col.name];
                 auto res = idx->find(*std::get<StringRef>(cond->right_value));
                 if (res) return {*res};
@@ -150,6 +167,7 @@ private:
         }
         else if (cond->op == Condition::Op::BETWEEN) {
             if (col.type == ColumnType::INT && std::holds_alternative<int>(cond->right_value) && std::holds_alternative<int>(cond->right_value2)) {
+                ensure_index(schema.name, col);
                 auto& idx = int_indices_[current_db][schema.name + "_" + col.name];
                 return idx->range_find(std::get<int>(cond->right_value), std::get<int>(cond->right_value2));
             }
@@ -294,6 +312,7 @@ private:
             for (size_t i = 0; i < schema.columns.size(); ++i) {
                 const auto& col = schema.columns[i];
                 if (col.modifiers.indexed) {
+                    ensure_index(schema.name, col);
                     auto current_db = storage_.get_current_db();
                     
                     if (col.type == ColumnType::INT && !std::holds_alternative<NullType>(new_row.values[i])) {

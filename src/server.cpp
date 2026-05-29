@@ -3,6 +3,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #include "../include/logger.hpp"
+#include "../include/telemetry.hpp"
 #include "../include/executor.hpp"
 #include <iostream>
 #include <string>
@@ -25,23 +26,32 @@ private:
     int server_socket_;
     std::atomic<bool> running_;
     AccessLogger logger_;
+    TelemetryCollector telemetry_;
+    TelemetryDisplay telemetry_display_;
     Executor executor_;
     
     WSADATA wsa_data_;
     
 public:
-    LoggedDBServer(int port = 8080, const std::string& log_file = "access.log")
-        : port_(port), running_(true), logger_(log_file, true, LogLevel::L_INFO) {
+    LoggedDBServer(int port = 8080, const std::string& log_file = "access.log",
+                   const std::string& node_id = "")
+        : port_(port),
+          running_(true),
+          logger_(log_file, true, LogLevel::L_INFO),
+          telemetry_(node_id.empty() ? ("node-" + std::to_string(port)) : node_id),
+          telemetry_display_(telemetry_) {
         
         std::cout << "Logging to: " << log_file << std::endl;
-        
+        std::cout << "Telemetry node: " << telemetry_.node_id() << std::endl;
+        TelemetryRegistry::instance().register_node(&telemetry_);
         
         WSAStartup(MAKEWORD(2, 2), &wsa_data_);
         
     }
     
     ~LoggedDBServer() {
-        
+        telemetry_display_.stop();
+        TelemetryRegistry::instance().unregister_node(telemetry_.node_id());
         WSACleanup();
         
     }
@@ -53,15 +63,17 @@ public:
         
         std::cout << "Logged DB Server started on port " << port_ << std::endl;
         std::cout << "Access log: access.log" << std::endl;
-        std::cout << "Statistics: STATS command" << std::endl;
-        std::cout << "Rotate log: ROTATE command" << std::endl;
+        std::cout << "Access log stats: STATS" << std::endl;
+        std::cout << "Telemetry: TELEMETRY | TELEMETRY CLUSTER" << std::endl;
+        std::cout << "Rotate log: ROTATE" << std::endl;
         
+        telemetry_display_.start(running_);
         accept_clients();
     }
     
     void stop() {
         running_ = false;
-        
+        telemetry_display_.stop();
         closesocket(server_socket_);
         
     }
@@ -145,16 +157,23 @@ private:
             
             std::cout << "[" << client_id << "] Processing: " << query << std::endl;
             
+            const std::string admin_cmd = admin_command_name(query);
             AccessLogger::QueryLogger query_logger(&logger_, query, client_id, handler_id);
+            const bool internal_cmd = is_admin_command(query);
+            RequestTelemetryScope telemetry_scope(internal_cmd ? nullptr : &telemetry_);
             
             int status_code = 200;
             std::string response;
             std::string error_message;
             
             try {
-                if (query == "STATS") {
+                if (admin_cmd == "TELEMETRY") {
+                    response = telemetry_.to_json();
+                } else if (admin_cmd == "TELEMETRY CLUSTER") {
+                    response = TelemetryRegistry::instance().cluster_snapshot().dump();
+                } else if (admin_cmd == "STATS") {
                     response = logger_.get_stats();
-                } else if (query == "ROTATE") {
+                } else if (admin_cmd == "ROTATE") {
                     logger_.rotate();
                     json j;
                     j["status"] = "success";
@@ -177,6 +196,7 @@ private:
             } else {
                 query_logger.error(error_message, status_code);
             }
+            telemetry_scope.finish(status_code);
             
             send_response(client_socket, response);
         }
@@ -192,6 +212,7 @@ private:
 int main(int argc, char* argv[]) {
     int port = 8080;
     std::string log_file = "access.log";
+    std::string node_id;
     
     if (argc > 1) {
         port = std::stoi(argv[1]);
@@ -199,9 +220,12 @@ int main(int argc, char* argv[]) {
     if (argc > 2) {
         log_file = argv[2];
     }
+    if (argc > 3) {
+        node_id = argv[3];
+    }
     
     try {
-        LoggedDBServer server(port, log_file);
+        LoggedDBServer server(port, log_file, node_id);
         server.start();
         
         std::cout << "Press Enter to stop..." << std::endl;

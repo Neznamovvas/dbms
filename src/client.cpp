@@ -3,6 +3,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <cctype>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -134,11 +136,18 @@ public:
         
         std::string current;
         int line_num = 1;
+
+        auto trim_query = [](std::string q) {
+            const auto not_space = [](unsigned char c) { return !std::isspace(c); };
+            q.erase(q.begin(), std::find_if(q.begin(), q.end(), not_space));
+            q.erase(std::find_if(q.rbegin(), q.rend(), not_space).base(), q.end());
+            return q;
+        };
         
         for (char c : content) {
             current += c;
             if (c == ';') {
-                std::string response = send_query(current);
+                std::string response = send_query(trim_query(current));
                 std::cout << response << std::endl;
                 current.clear();
                 line_num++;
