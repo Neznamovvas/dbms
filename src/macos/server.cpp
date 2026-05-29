@@ -167,7 +167,7 @@ private:
 
                 if (auth_.is_auth_command(parsed.type)) {
                     response = auth_.handle_auth_command(parsed, session).dump();
-                } else if (!admin_cmd.empty()) {
+                } else if (internal_cmd) {
                     if (!auth_.require_auth(session)) {
                         throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
                     }
