@@ -1,6 +1,5 @@
 LOGIN admin "admin";
 
 CREATE USER bob "password";
-GRANT READ, CONNECT ON DATABASE mydb TO USER bob;
-USE mydb;
-SELECT * FROM users;
+GRANT READ, CONNECT ON DATABASE test_db TO USER bob;
+USE test_db;

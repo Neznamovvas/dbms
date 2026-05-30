@@ -10,14 +10,6 @@
 
 Данные по умолчанию сохраняются в каталог `./data`.
 
-## Структура по платформам
-
-| Платформа        | Исходники сервера/клиента   |
-|------------------|-----------------------------|
-| macOS, Linux     | `src/macos/server.cpp`, `src/macos/client.cpp` (POSIX-сокеты) |
-
-Платформа выбирается автоматически в `cmake/PlatformSources.cmake`.
-
 ---
 
 ## macOS
@@ -43,20 +35,6 @@ cmake --build build
 ./build/client                    # интерактивный режим, localhost:8080
 ./build/client script.txt         # выполнить скрипт
 ./build/client -h 127.0.0.1 -p 8080   # другой хост/порт
-```
-
----
-
-## Linux
-
-Сборка и запуск такие же, как на macOS (используются те же POSIX-исходники):
-
-```bash
-cmake -S . -B build
-cmake --build build
-
-./build/server
-./build/client script.txt
 ```
 
 ---
