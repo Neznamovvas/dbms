@@ -1,6 +1,10 @@
 LOGIN admin "admin";
+CREATE USER bob "password";
 CREATE DATABASE test_db;
 USE test_db;
+GRANT READ, CONNECT ON DATABASE test_db TO USER bob;
+CREATE GROUP editors;
+GRANT WRITE ON DATABASE test_db TO GROUP editors;
 CREATE TABLE users (id INT INDEXED, name STRING NOT_NULL, age INT);
 INSERT INTO users (id, name, age) VALUE (1, "Alice", 25), (2, "Bob", 30), (3, "Charlie", 35);
 SELECT * FROM users;

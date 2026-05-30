@@ -1,5 +1,8 @@
-LOGIN admin "admin";
-
-CREATE USER bob "password";
-GRANT READ, CONNECT ON DATABASE test_db TO USER bob;
+LOGIN bob "password";
 USE test_db;
+SELECT COUNT(id) FROM users;
+SELECT SUM(age) FROM users;
+SELECT AVG(age) FROM users;
+INSERT INTO users (id, name, age) VALUE (4, "Charliee", 40);
+
+GRANT READ ON TABLE test_db.users TO USER bob;

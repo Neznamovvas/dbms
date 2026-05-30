@@ -13,11 +13,13 @@ public:
 
     bool is_superuser(const std::string& username) const { return store_.is_superuser(username); }
 
+    // Может ли пользователь выполнить действие priv над таблицей table в базе db.
     bool can(const std::string& username, const std::string& db, const std::string& table, Privilege priv) const {
         if (store_.is_superuser(username)) {
             return true;
         }
 
+        // получение прав бд
         const DbPermissions* perms = store_.db_perms(db);
         PrivilegeMask mask = 0;
         if (perms) {
@@ -52,6 +54,7 @@ public:
         return has_privilege(mask, priv);
     }
 
+    // переводит запрос в требуемое право
     bool check_query(const std::string& username, const SQLParser::ParsedQuery& q,
                      const std::string& current_db) const {
         if (store_.is_superuser(username)) {

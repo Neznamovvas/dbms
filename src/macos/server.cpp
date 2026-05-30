@@ -57,6 +57,7 @@ public:
     }
 
     void start() {
+        // создаём сокет и начинаем прослушивание
         create_socket();
         bind_socket();
         listen_for_connections();
@@ -66,7 +67,7 @@ public:
         std::cout << "Access log stats: STATS" << std::endl;
         std::cout << "Telemetry: TELEMETRY | TELEMETRY CLUSTER" << std::endl;
         std::cout << "Rotate log: ROTATE" << std::endl;
-
+        // стартуем дисплей телеметрии и начинаем принимать клиентов
         telemetry_display_.start(running_);
         accept_clients();
     }
@@ -88,10 +89,12 @@ private:
         }
 
         int opt = 1;
+        // Позволяет быстро перезапускать сервер
         setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     }
 
     void bind_socket() {
+        // Привязка сокета к порту
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
@@ -104,6 +107,7 @@ private:
     }
 
     void listen_for_connections() {
+        // до 5 клиентов
         if (listen(server_socket_, 5) < 0) {
             throw std::runtime_error("Failed to listen");
         }
@@ -113,33 +117,37 @@ private:
         while (running_) {
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
-
+            // ждём пока кто то подключится
             int client_socket = accept(server_socket_, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
             if (client_socket < 0) {
                 continue;
             }
-
+            // генерирует идентификаторы
             std::string client_id = IDGenerator::generate_client_id();
             std::string handler_id = IDGenerator::generate_handler_id();
 
             std::cout << "New client connected: " << client_id << " (handler: " << handler_id << ")" << std::endl;
-
+            // создаём поток и отделяем его
             std::thread(&LoggedDBServer::handle_client, this, client_socket, client_id, handler_id).detach();
         }
     }
 
+    // отправляем ответ клиенту
     void send_response(int client_socket, const std::string& response) {
         std::string resp = response + "\n";
         send(client_socket, resp.c_str(), resp.size(), 0);
     }
 
+    // обработка запроса
     void handle_client(int client_socket, const std::string& client_id, const std::string& handler_id) {
         char buffer[BUFFER_SIZE];
+        // сессия клиента хранит имя, токен и права
         ClientSession session;
 
         while (running_) {
             memset(buffer, 0, sizeof(buffer));
 
+            // полуачем запрос
             ssize_t bytes = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
             if (bytes <= 0) {
                 break;
@@ -152,9 +160,11 @@ private:
 
             std::cout << "[" << client_id << "] Processing: " << query << std::endl;
 
+            // команды администратора TELEMETRY и тд
             const std::string admin_cmd = admin_command_name(query);
             AccessLogger::QueryLogger query_logger(&logger_, query, client_id, handler_id);
             const bool internal_cmd = is_admin_command(query);
+            // телеметрия запроса
             RequestTelemetryScope telemetry_scope(internal_cmd ? nullptr : &telemetry_);
 
             int status_code = 200;
@@ -162,12 +172,15 @@ private:
             std::string error_message;
 
             try {
+                // парсинг сообщения
                 SQLParser parser;
                 auto parsed = parser.parse(query);
 
+                // если это LOGIN или SET TOKEN
                 if (auth_.is_auth_command(parsed.type)) {
                     response = auth_.handle_auth_command(parsed, session).dump();
                 } else if (internal_cmd) {
+                    // проверяем есть ли логин, доступ и проверяем команды
                     if (!auth_.require_auth(session)) {
                         throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
                     }
@@ -191,6 +204,7 @@ private:
                     if (!auth_.require_auth(session)) {
                         throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
                     }
+                    // выполнение запроса
                     auto result = executor_.execute(query, session, auth_.checker());
                     response = result.to_json();
                 }

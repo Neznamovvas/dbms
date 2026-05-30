@@ -19,6 +19,7 @@ private:
     std::string session_token_;
     bool token_sent_ = false;
 
+    // проверяем ответ сервера и ищем токен
     void maybe_apply_token(const std::string& response) {
         const std::string key = "\"token\":\"";
         const size_t pos = response.find(key);
@@ -31,6 +32,7 @@ private:
             return;
         }
         session_token_ = response.substr(start, end - start);
+        // если токена нет то он автоматически формируется и отправляется на сервер
         if (!token_sent_ && !session_token_.empty()) {
             const std::string set_cmd = "SET TOKEN " + session_token_;
             std::cout << "(auto) SET TOKEN for session" << std::endl;
@@ -49,6 +51,7 @@ public:
     }
 
     bool connect() {
+        // Создание сокета AF_INET - IPv4, SOCK_STREAM - TCP
         sock_ = socket(AF_INET, SOCK_STREAM, 0);
         if (sock_ < 0) {
             std::cerr << "Failed to create socket" << std::endl;
@@ -67,6 +70,7 @@ public:
             return false;
         }
 
+        // подключаемся к серверу
         if (::connect(sock_, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
             std::cerr << "Failed to connect to server" << std::endl;
             close(sock_);
@@ -91,19 +95,22 @@ public:
         }
 
         std::string query_with_newline = query + "\n";
+        // отправляем запрос серверу
         send(sock_, query_with_newline.c_str(), query_with_newline.size(), 0);
 
         char buffer[65536];
         memset(buffer, 0, sizeof(buffer));
 
+        // читаем ответ с сервера
         ssize_t bytes_received = recv(sock_, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received <= 0) {
             return "Connection closed by server";
         }
-
+        // возвращаем строки
         return std::string(buffer, static_cast<size_t>(bytes_received));
     }
 
+    // интерактивный режим
     void run_interactive() {
         if (!connect()) {
             return;
@@ -120,7 +127,8 @@ public:
         while (true) {
             std::cout << "\ndbms> ";
             std::cout.flush();
-
+            
+            // чтение строк
             if (!std::getline(std::cin, line)) {
                 break;
             }
@@ -131,9 +139,10 @@ public:
             if (line == "exit" || line == "exit;") {
                 break;
             }
-
+            // накопление запроса
             buffer += line + " ";
 
+            // отправляем запрос
             if (line.find(';') != std::string::npos) {
                 std::string response = send_query(buffer);
                 std::cout << response << std::endl;

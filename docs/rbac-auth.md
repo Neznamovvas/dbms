@@ -189,5 +189,3 @@ recv query
   → SQL → JWT + PermissionChecker → Executor
   → TELEMETRY, … → JWT + ADMIN
 ```
-
-В `access.log` (через расширение логгера) можно добавить поле `username` из сессии.
