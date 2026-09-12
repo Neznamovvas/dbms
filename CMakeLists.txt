@@ -4,28 +4,38 @@ project(DBMS VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Платформенные исходники (Windows vs POSIX/macOS)
-include(cmake/PlatformSources.cmake)
-
 if(MINGW)
     add_definitions(-D_WIN32_WINNT=0x0A00)
 endif()
 
-set(COMMON_LIBS "")
+# nlohmann/json
+include(FetchContent)
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
+set(COMMON_LIBS nlohmann_json::nlohmann_json)
+
+# std::thread needs pthread on Linux/macOS; Windows needs winsock.
+find_package(Threads REQUIRED)
+set(COMMON_LIBS ${COMMON_LIBS} Threads::Threads)
 
 if(WIN32)
-    if(MINGW)
-        list(APPEND COMMON_LIBS ws2_32 stdc++fs)
-    else()
-        list(APPEND COMMON_LIBS ws2_32)
-    endif()
+    set(COMMON_LIBS ${COMMON_LIBS} ws2_32)
+endif()
+
+if(MINGW)
+    set(COMMON_LIBS ${COMMON_LIBS} stdc++fs)
 endif()
 
 # Сервер с логированием
-add_executable(server ${DBMS_SERVER_SOURCE})
+add_executable(server src/server.cpp)
 target_include_directories(server PRIVATE include)
-target_link_libraries(server PRIVATE ${COMMON_LIBS})
+target_link_libraries(server ${COMMON_LIBS})
 
 # Клиент
-add_executable(client ${DBMS_CLIENT_SOURCE})
-target_link_libraries(client PRIVATE ${COMMON_LIBS})
+add_executable(client src/client.cpp)
+target_link_libraries(client ${COMMON_LIBS})

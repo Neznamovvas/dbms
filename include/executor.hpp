@@ -6,8 +6,7 @@
 #include "parser.hpp"
 #include "string_pool.hpp"
 #include <regex>
-// #include <nlohmann/json.hpp>
-#include "../include/json.hpp"
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
@@ -21,7 +20,7 @@ private:
     
     void rebuild_index(const std::string& table_name, const Column& col) {
         if (!col.modifiers.indexed) return;
-
+        
         const auto& rows = storage_.get_table_data(table_name);
         auto current_db = storage_.get_current_db();
         auto schema = storage_.get_schema(table_name);
@@ -45,21 +44,6 @@ private:
                     idx->insert(rows[i].get_string(col_idx), i);
                 }
             }
-        }
-    }
-
-    void ensure_index(const std::string& table_name, const Column& col) {
-        if (!col.modifiers.indexed) return;
-
-        const auto current_db = storage_.get_current_db();
-        const std::string key = table_name + "_" + col.name;
-
-        if (col.type == ColumnType::INT) {
-            if (!int_indices_[current_db][key]) {
-                rebuild_index(table_name, col);
-            }
-        } else if (!str_indices_[current_db][key]) {
-            rebuild_index(table_name, col);
         }
     }
     
@@ -154,12 +138,10 @@ private:
         
         if (cond->op == Condition::Op::EQ) {
             if (col.type == ColumnType::INT && std::holds_alternative<int>(cond->right_value)) {
-                ensure_index(schema.name, col);
                 auto& idx = int_indices_[current_db][schema.name + "_" + col.name];
                 auto res = idx->find(std::get<int>(cond->right_value));
                 if (res) return {*res};
             } else if (col.type == ColumnType::STRING && std::holds_alternative<StringRef>(cond->right_value)) {
-                ensure_index(schema.name, col);
                 auto& idx = str_indices_[current_db][schema.name + "_" + col.name];
                 auto res = idx->find(*std::get<StringRef>(cond->right_value));
                 if (res) return {*res};
@@ -167,7 +149,6 @@ private:
         }
         else if (cond->op == Condition::Op::BETWEEN) {
             if (col.type == ColumnType::INT && std::holds_alternative<int>(cond->right_value) && std::holds_alternative<int>(cond->right_value2)) {
-                ensure_index(schema.name, col);
                 auto& idx = int_indices_[current_db][schema.name + "_" + col.name];
                 return idx->range_find(std::get<int>(cond->right_value), std::get<int>(cond->right_value2));
             }
@@ -191,7 +172,33 @@ private:
     
     
 public:
-    Executor() : storage_() {}
+    Executor() : storage_() {
+        // storage_'s constructor already replayed every table's WAL from
+        // disk into memory (load_all()), but that only rebuilds row data -
+        // in-memory B-tree indices are a query-time cache and are not
+        // persisted themselves (per the assignment: indices must reference
+        // the data, not duplicate it). So on every startup we rebuild the
+        // index for each INDEXED column of every already-existing table from
+        // the data that was just loaded, exactly as CREATE TABLE does for a
+        // brand new one.
+        for (const auto& db : storage_.get_databases()) {
+            auto schemas = storage_.get_all_schemas(db);
+            std::string prev_db = storage_.get_current_db();
+            for (const auto& [table_name, schema] : schemas) {
+                for (const auto& col : schema.columns) {
+                    if (col.modifiers.indexed) {
+                        // rebuild_index() reads storage_.get_current_db(),
+                        // so make sure the right database is selected while
+                        // we rebuild indices that belong to it.
+                        if (storage_.get_current_db() != db) {
+                            storage_.use_database(db);
+                        }
+                        rebuild_index(table_name, col);
+                    }
+                }
+            }
+        }
+    }
     
     QueryResult execute(const std::string& query) {
         
@@ -275,7 +282,6 @@ private:
     
     void execute_insert(const SQLParser::ParsedQuery& query) {
         auto schema = storage_.get_schema(query.table_name);
-        auto& rows = storage_.get_table_data(query.table_name);
         
         for (const auto& row_values : query.values) {
             Row new_row;
@@ -305,14 +311,15 @@ private:
                 }
             }
             
-            size_t record_id = rows.size();
-            rows.push_back(new_row);
+            // insert_row() durably appends this row to the table's on-disk
+            // WAL before returning - the row is never only "in RAM".
+            size_t record_id = storage_.get_table_data(query.table_name).size();
+            storage_.insert_row(query.table_name, new_row);
             
             
             for (size_t i = 0; i < schema.columns.size(); ++i) {
                 const auto& col = schema.columns[i];
                 if (col.modifiers.indexed) {
-                    ensure_index(schema.name, col);
                     auto current_db = storage_.get_current_db();
                     
                     if (col.type == ColumnType::INT && !std::holds_alternative<NullType>(new_row.values[i])) {
@@ -326,8 +333,11 @@ private:
             }
         }
         
+        // No full-table rewrite needed: each row above was already flushed
+        // to disk individually. save_table() here only flushes the (rarely
+        // changing) schema and triggers WAL compaction if the log has grown
+        // past the threshold.
         storage_.save_table(storage_.get_current_db(), query.table_name);
-        storage_.create_snapshot(query.table_name);
     }
     
     QueryResult execute_select(const SQLParser::ParsedQuery& query) {
@@ -339,12 +349,21 @@ private:
         
         QueryResult result;
         
+        // For an aggregate query (SELECT SUM(col)/COUNT(...)/AVG(col) FROM ...)
+        // the parser does not put anything into select_columns - the target
+        // column lives in query.aggregate_col instead. apply_aggregate()
+        // below needs the *full* matching rows (so it can read
+        // aggregate_col out of them by index), not the column-projected
+        // result_row built below, which would be empty for an aggregate
+        // query and reading past its bounds is undefined behavior (this was
+        // the cause of the segfault on SELECT SUM(age) FROM users).
+        bool is_aggregate = !query.aggregate_func.empty();
         
         if (query.select_all) {
             for (const auto& col : schema.columns) {
                 result.column_names.push_back(col.name);
             }
-        } else {
+        } else if (!is_aggregate) {
             for (size_t i = 0; i < query.select_columns.size(); ++i) {
                 std::string alias = i < query.select_aliases.size() ? query.select_aliases[i] : query.select_columns[i];
                 result.column_names.push_back(alias);
@@ -363,8 +382,9 @@ private:
             
             Row result_row;
             
-            // Агрегаты (SUM/AVG) читают values по индексу схемы — нужна полная строка
-            if (query.select_all || !query.aggregate_func.empty()) {
+            if (query.select_all || is_aggregate) {
+                // Keep the full row so apply_aggregate() can look up
+                // aggregate_col by its schema index below.
                 result_row = rows[i];
             } else {
                 for (const auto& col_name : query.select_columns) {
@@ -382,7 +402,7 @@ private:
         }
         
         
-        if (!query.aggregate_func.empty()) {
+        if (is_aggregate) {
             result = apply_aggregate(result, query, schema);
         }
         
@@ -406,6 +426,7 @@ private:
             bool has_values = false;
             
             for (const auto& row : current.rows) {
+                if (col_idx >= row.values.size()) continue;
                 if (!std::holds_alternative<NullType>(row.values[col_idx]) && 
                     std::holds_alternative<int>(row.values[col_idx])) {
                     sum += std::get<int>(row.values[col_idx]);
@@ -425,6 +446,7 @@ private:
             int count = 0;
             
             for (const auto& row : current.rows) {
+                if (col_idx >= row.values.size()) continue;
                 if (!std::holds_alternative<NullType>(row.values[col_idx]) && 
                     std::holds_alternative<int>(row.values[col_idx])) {
                     sum += std::get<int>(row.values[col_idx]);
@@ -443,32 +465,41 @@ private:
     
     QueryResult execute_update(const SQLParser::ParsedQuery& query) {
         auto schema = storage_.get_schema(query.table_name);
-        auto& rows = storage_.get_table_data(query.table_name);
         
         std::vector<size_t> row_indices = optimize_with_index(schema, query.condition.get());
         int updated_count = 0;
         
-        for (size_t i = 0; i < rows.size(); ++i) {
+        // Snapshot the current row count/values up front: update_row() below
+        // durably persists each change as it happens, so we iterate over a
+        // stable copy of "which rows currently match" first.
+        size_t row_count = storage_.get_table_data(query.table_name).size();
+        
+        for (size_t i = 0; i < row_count; ++i) {
             if (!row_indices.empty() && std::find(row_indices.begin(), row_indices.end(), i) == row_indices.end()) {
                 continue;
             }
             
-            if (query.condition && !evaluate_condition(rows[i], *query.condition, schema)) {
+            Row updated_row = storage_.get_table_data(query.table_name)[i];
+            
+            if (query.condition && !evaluate_condition(updated_row, *query.condition, schema)) {
                 continue;
             }
             
             
             for (const auto& update : query.updates) {
                 size_t col_idx = schema.get_column_index(update.first);
-                rows[i].values[col_idx] = update.second;
+                updated_row.values[col_idx] = update.second;
             }
             
             
             for (size_t j = 0; j < schema.columns.size(); ++j) {
-                if (schema.columns[j].modifiers.not_null && std::holds_alternative<NullType>(rows[i].values[j])) {
+                if (schema.columns[j].modifiers.not_null && std::holds_alternative<NullType>(updated_row.values[j])) {
                     throw std::runtime_error("NOT_NULL constraint violated for column: " + schema.columns[j].name);
                 }
             }
+            
+            // Durably persist this single row change to the WAL immediately.
+            storage_.update_row(query.table_name, i, updated_row);
             
             updated_count++;
         }
@@ -481,34 +512,38 @@ private:
         }
         
         storage_.save_table(storage_.get_current_db(), query.table_name);
-        storage_.create_snapshot(query.table_name);
         
         return create_message_result(std::to_string(updated_count) + " rows updated");
     }
     
     QueryResult execute_delete(const SQLParser::ParsedQuery& query) {
         auto schema = storage_.get_schema(query.table_name);
-        auto& rows = storage_.get_table_data(query.table_name);
         
         std::vector<size_t> row_indices = optimize_with_index(schema, query.condition.get());
         
-        std::vector<Row> new_rows;
         int deleted_count = 0;
         
-        for (size_t i = 0; i < rows.size(); ++i) {
+        // Delete from the end towards the start so that earlier indices
+        // (which update_row/delete_row address positionally) stay valid as
+        // rows are removed one at a time.
+        size_t row_count = storage_.get_table_data(query.table_name).size();
+        for (size_t rev = 0; rev < row_count; ++rev) {
+            size_t i = row_count - 1 - rev;
+            
             if (!row_indices.empty() && std::find(row_indices.begin(), row_indices.end(), i) == row_indices.end()) {
-                new_rows.push_back(rows[i]);
                 continue;
             }
             
-            if (query.condition && !evaluate_condition(rows[i], *query.condition, schema)) {
-                new_rows.push_back(rows[i]);
-            } else {
-                deleted_count++;
+            const Row& row = storage_.get_table_data(query.table_name)[i];
+            
+            if (query.condition && !evaluate_condition(row, *query.condition, schema)) {
+                continue;
             }
+            
+            // Durably persist this row deletion to the WAL immediately.
+            storage_.delete_row(query.table_name, i);
+            deleted_count++;
         }
-        
-        rows = new_rows;
         
         
         for (const auto& col : schema.columns) {
@@ -518,7 +553,6 @@ private:
         }
         
         storage_.save_table(storage_.get_current_db(), query.table_name);
-        storage_.create_snapshot(query.table_name);
         
         return create_message_result(std::to_string(deleted_count) + " rows deleted");
     }

@@ -13,8 +13,7 @@
 #include <map>
 #include <random>
 #include <atomic>
-// #include <nlohmann/json.hpp>
-#include "../include/json.hpp"
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
@@ -128,8 +127,12 @@ private:
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             time.time_since_epoch()) % 1000;
         
-        std::tm tm;
-        localtime_s(&tm, &time_t);
+        std::tm tm{};
+        #ifdef _WIN32
+            localtime_s(&tm, &time_t);
+        #else
+            localtime_r(&time_t, &tm);
+        #endif
         
         std::stringstream ss;
         ss << std::put_time(&tm, format.c_str());
