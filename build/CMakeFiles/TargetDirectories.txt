@@ -1,0 +1,6 @@
+/Users/persona21/course_project/dbms/build/CMakeFiles/server.dir
+/Users/persona21/course_project/dbms/build/CMakeFiles/client.dir
+/Users/persona21/course_project/dbms/build/CMakeFiles/edit_cache.dir
+/Users/persona21/course_project/dbms/build/CMakeFiles/rebuild_cache.dir
+/Users/persona21/course_project/dbms/build/_deps/json-build/CMakeFiles/edit_cache.dir
+/Users/persona21/course_project/dbms/build/_deps/json-build/CMakeFiles/rebuild_cache.dir

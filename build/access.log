@@ -1,0 +1,47 @@
+# ========================================
+# DBMS Access Log
+# Format: CSV
+# Columns: query, client_id, handler_id, start_time, end_time, duration_ms, status_code, error_message
+# ========================================
+"QUERY","CLIENT_ID","HANDLER_ID","START_TIME","END_TIME","DURATION_MS","STATUS_CODE","ERROR_MESSAGE"
+"CREATE DATABASE test_db;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.662","2026-09-12 08:52:50.664",1,200,""
+"
+USE test_db;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.665","2026-09-12 08:52:50.665",0,200,""
+"
+CREATE TABLE users (id INT INDEXED, name STRING NOT_NULL, age INT);","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.666","2026-09-12 08:52:50.667",1,200,""
+"
+INSERT INTO users (id, name, age) VALUE (1, ""Alice"", 25), (2, ""Bob"", 30), (3, ""Charlie"", 35);","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.667","2026-09-12 08:52:50.668",1,200,""
+"
+SELECT * FROM users;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.669","2026-09-12 08:52:50.669",0,200,""
+"
+SELECT name, age FROM users WHERE id == 2;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.669","2026-09-12 08:52:50.669",0,200,""
+"
+SELECT * FROM users WHERE age BETWEEN 25 AND 35;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.669","2026-09-12 08:52:50.669",0,200,""
+"
+SELECT * FROM users WHERE name LIKE ""A.*"";","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.670","2026-09-12 08:52:50.670",0,200,""
+"
+UPDATE users SET age = 26 WHERE name == ""Alice"";","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.670","2026-09-12 08:52:50.671",0,200,""
+"
+DELETE FROM users WHERE age > 30;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.671","2026-09-12 08:52:50.671",0,200,""
+"
+SELECT COUNT(id) FROM users;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.671","2026-09-12 08:52:50.671",0,200,""
+"
+SELECT SUM(age) FROM users;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.672","2026-09-12 08:52:50.672",0,200,""
+"
+SELECT AVG(age) FROM users;","client_1789192370662_1","handler_0x2010be240","2026-09-12 08:52:50.672","2026-09-12 08:52:50.672",0,200,""
+# ========================================
+# DBMS Access Log
+# Format: CSV
+# Columns: query, client_id, handler_id, start_time, end_time, duration_ms, status_code, error_message
+# ========================================
+"QUERY","CLIENT_ID","HANDLER_ID","START_TIME","END_TIME","DURATION_MS","STATUS_CODE","ERROR_MESSAGE"
+"SELECT * FROM users; ","client_1789192462049_0","handler_0x2010be240","2026-09-12 08:54:28.581","2026-09-12 08:54:28.583",2,200,""
+"INSERT INTO users (id, name, age) VALUE (3, ""loh"", 42) ; ","client_1789192555205_1","handler_0x2010be240","2026-09-12 08:56:29.527","2026-09-12 08:56:29.530",3,200,""
+"REVERT users 2026-09-12 08:54:28.583 SELECT * FROM users; ","client_1789192555205_1","handler_0x2010be240","2026-09-12 08:57:41.060","2026-09-12 08:57:41.062",1,500,"Invalid timestamp format. Expected: yyyy.mm.dd-hh:mm:ss.msmsms"
+"2026.09.12-08:53:30.2 REVERT users 2026.09.12-08:53:30.213; ","client_1789192555205_1","handler_0x2010be240","2026-09-12 08:58:56.538","2026-09-12 08:58:56.539",0,500,"Unknown query type"
+"SELECT * FROM users; ","client_1789192555205_1","handler_0x2010be240","2026-09-12 08:59:06.682","2026-09-12 08:59:06.683",0,200,""
+"SELECT * FROM users; ","client_1789192813856_2","handler_0x2010be240","2026-09-12 09:00:16.588","2026-09-12 09:00:16.588",0,200,""
+"INSERT INTO users (id, name, age) VALUE (4, ""5"", 6); ","client_1789192813856_2","handler_0x2010be240","2026-09-12 09:00:32.830","2026-09-12 09:00:32.832",1,200,""
+"SELECT * FROM users; ","client_1789192813856_2","handler_0x2010be240","2026-09-12 09:00:40.188","2026-09-12 09:00:40.188",0,200,""
+"REVERT users 2026.09.12-08:53:30.213; ","client_1789192813856_2","handler_0x2010be240","2026-09-12 09:01:02.698","2026-09-12 09:01:02.698",0,200,""
+"SELECT * FROM users; ","client_1789192813856_2","handler_0x2010be240","2026-09-12 09:01:11.613","2026-09-12 09:01:11.613",0,200,""
