@@ -16,10 +16,6 @@
 
 namespace dbms {
 
-// ============================================================
-// Обёртка над StringRef, ведущая себя как строка.
-// Строки при чтении с диска интернируются через StringPool.
-// ============================================================
 struct IndexKey {
     StringRef ref;
 
@@ -37,9 +33,7 @@ struct IndexKey {
     bool operator>=(const IndexKey& o) const { return str() >= o.str(); }
 };
 
-// ============================================================
-// Кодек ключей
-// ============================================================
+
 template<typename KeyType>
 struct KeyCodec;
 
@@ -79,9 +73,9 @@ struct KeyCodec<IndexKey> {
     }
 };
 
-// ============================================================
-// Узел B+-дерева
-// ============================================================
+
+
+
 template<typename KeyType>
 struct DiskNode {
     bool                  is_leaf = true;
@@ -180,9 +174,9 @@ struct DiskNode {
     }
 };
 
-// ============================================================
-// Файловое B+-дерево
-// ============================================================
+
+
+
 template<typename KeyType>
 class DiskBPlusTree {
 public:
@@ -226,7 +220,7 @@ public:
         return header_off;
     }
 
-    // ============ Операции ============
+
 
     void insert(const KeyType& key, uint64_t record_id) {
         uint64_t leaf_off = find_leaf_offset(key);
@@ -247,7 +241,7 @@ public:
             split_leaf(leaf_off, leaf);
         } else {
             leaf.write_at(file_, leaf_off);
-            // Обновляем free_offset, если узел вырос за свою текущую границу
+
             uint64_t end = leaf_off + leaf.serialized_size();
             if (end > header_.free_offset) {
                 header_.free_offset = end;
@@ -336,7 +330,7 @@ private:
         uint64_t right_off = allocate_node();
         right.write_at(file_, right_off);
 
-        // Обновляем free_offset после записи правого листа
+
         {
             uint64_t end = right_off + right.serialized_size();
             if (end > header_.free_offset) header_.free_offset = end;
