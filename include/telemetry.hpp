@@ -1,8 +1,6 @@
 #ifndef DBMS_TELEMETRY_HPP
 #define DBMS_TELEMETRY_HPP
 
-#include "json.hpp"
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -16,6 +14,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace dbms {
 

@@ -166,7 +166,7 @@ public:
         std::string aggregate_func;
         std::string aggregate_col;
 
-        // Auth / RBAC
+
         std::string auth_username;
         std::string auth_password;
         std::string auth_token;

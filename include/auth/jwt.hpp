@@ -2,7 +2,7 @@
 #define DBMS_AUTH_JWT_HPP
 
 #include "crypto.hpp"
-#include "../json.hpp"
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
 #include <optional>

@@ -1,3 +1,15 @@
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+#endif
+
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -5,11 +17,6 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
-
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 
 class DBMSClient {
 private:
@@ -19,7 +26,11 @@ private:
     std::string session_token_;
     bool token_sent_ = false;
 
-    // проверяем ответ сервера и ищем токен
+#ifdef _WIN32
+    WSADATA wsa_data_;
+#endif
+
+
     void maybe_apply_token(const std::string& response) {
         const std::string key = "\"token\":\"";
         const size_t pos = response.find(key);
@@ -32,7 +43,7 @@ private:
             return;
         }
         session_token_ = response.substr(start, end - start);
-        // если токена нет то он автоматически формируется и отправляется на сервер
+
         if (!token_sent_ && !session_token_.empty()) {
             const std::string set_cmd = "SET TOKEN " + session_token_;
             std::cout << "(auto) SET TOKEN for session" << std::endl;
@@ -44,19 +55,38 @@ private:
 
 public:
     DBMSClient(const std::string& server_ip = "127.0.0.1", int port = 8080)
-        : sock_(-1), server_ip_(server_ip), port_(port) {}
+        : sock_(-1), server_ip_(server_ip), port_(port) {
+#ifdef _WIN32
+
+        if (WSAStartup(MAKEWORD(2, 2), &wsa_data_) != 0) {
+            std::cerr << "WSAStartup failed" << std::endl;
+        }
+#endif
+    }
 
     ~DBMSClient() {
         disconnect();
+#ifdef _WIN32
+        WSACleanup();
+#endif
     }
 
     bool connect() {
-        // Создание сокета AF_INET - IPv4, SOCK_STREAM - TCP
+
+#ifdef _WIN32
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) {
+            std::cerr << "Failed to create socket" << std::endl;
+            return false;
+        }
+        sock_ = static_cast<int>(s);
+#else
         sock_ = socket(AF_INET, SOCK_STREAM, 0);
         if (sock_ < 0) {
             std::cerr << "Failed to create socket" << std::endl;
             return false;
         }
+#endif
 
         struct sockaddr_in server_addr;
         memset(&server_addr, 0, sizeof(server_addr));
@@ -65,18 +95,31 @@ public:
 
         if (inet_pton(AF_INET, server_ip_.c_str(), &server_addr.sin_addr) <= 0) {
             std::cerr << "Invalid server address" << std::endl;
+#ifdef _WIN32
+            closesocket(sock_);
+#else
             close(sock_);
+#endif
             sock_ = -1;
             return false;
         }
 
-        // подключаемся к серверу
+
+#ifdef _WIN32
+        if (::connect(sock_, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) == SOCKET_ERROR) {
+            std::cerr << "Failed to connect to server" << std::endl;
+            closesocket(sock_);
+            sock_ = -1;
+            return false;
+        }
+#else
         if (::connect(sock_, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
             std::cerr << "Failed to connect to server" << std::endl;
             close(sock_);
             sock_ = -1;
             return false;
         }
+#endif
 
         std::cout << "Connected to server at " << server_ip_ << ":" << port_ << std::endl;
         return true;
@@ -84,7 +127,11 @@ public:
 
     void disconnect() {
         if (sock_ >= 0) {
+#ifdef _WIN32
+            closesocket(sock_);
+#else
             close(sock_);
+#endif
             sock_ = -1;
         }
     }
@@ -95,22 +142,34 @@ public:
         }
 
         std::string query_with_newline = query + "\n";
-        // отправляем запрос серверу
+
+#ifdef _WIN32
+        send(sock_, query_with_newline.c_str(),
+             static_cast<int>(query_with_newline.size()), 0);
+#else
         send(sock_, query_with_newline.c_str(), query_with_newline.size(), 0);
+#endif
 
         char buffer[65536];
         memset(buffer, 0, sizeof(buffer));
 
-        // читаем ответ с сервера
+
+#ifdef _WIN32
+        int bytes_received = recv(sock_, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received <= 0) {
+            return "Connection closed by server";
+        }
+        return std::string(buffer, static_cast<size_t>(bytes_received));
+#else
         ssize_t bytes_received = recv(sock_, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received <= 0) {
             return "Connection closed by server";
         }
-        // возвращаем строки
         return std::string(buffer, static_cast<size_t>(bytes_received));
+#endif
     }
 
-    // интерактивный режим
+
     void run_interactive() {
         if (!connect()) {
             return;
@@ -127,8 +186,8 @@ public:
         while (true) {
             std::cout << "\ndbms> ";
             std::cout.flush();
-            
-            // чтение строк
+
+
             if (!std::getline(std::cin, line)) {
                 break;
             }
@@ -139,10 +198,10 @@ public:
             if (line == "exit" || line == "exit;") {
                 break;
             }
-            // накопление запроса
+
             buffer += line + " ";
 
-            // отправляем запрос
+
             if (line.find(';') != std::string::npos) {
                 std::string response = send_query(buffer);
                 std::cout << response << std::endl;

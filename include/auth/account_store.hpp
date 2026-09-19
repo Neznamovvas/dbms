@@ -3,7 +3,7 @@
 
 #include "auth_types.hpp"
 #include "crypto.hpp"
-#include "../json.hpp"
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>

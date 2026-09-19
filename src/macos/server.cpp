@@ -1,21 +1,28 @@
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+#endif
 
-#include "../../include/macos/posix_compat.hpp"
 #include "../../include/logger.hpp"
 #include "../../include/telemetry.hpp"
 #include "../../include/executor.hpp"
 #include "../../include/parser.hpp"
 #include "../../include/auth/auth_service.hpp"
 #include "../../include/auth/auth_types.hpp"
+
 #include <iostream>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <cstring>
 #include <ctime>
+#include <cstdint>
 
 using namespace dbms;
 using namespace dbms::auth;
@@ -33,6 +40,10 @@ private:
     Executor executor_;
     AuthService auth_;
 
+#ifdef _WIN32
+    WSADATA wsa_data_;
+#endif
+
 public:
     LoggedDBServer(int port = 8080, const std::string& log_file = "access.log",
                    const std::string& node_id = "")
@@ -42,6 +53,14 @@ public:
           logger_(log_file, true, LogLevel::L_INFO),
           telemetry_(node_id.empty() ? ("node-" + std::to_string(port)) : node_id),
           telemetry_display_(telemetry_) {
+
+#ifdef _WIN32
+
+        if (WSAStartup(MAKEWORD(2, 2), &wsa_data_) != 0) {
+            throw std::runtime_error("WSAStartup failed");
+        }
+#endif
+
         TelemetryRegistry::instance().register_node(&telemetry_);
         std::cout << "Logging to: " << log_file << std::endl;
         std::cout << "Telemetry node: " << telemetry_.node_id() << std::endl;
@@ -52,12 +71,19 @@ public:
         telemetry_display_.stop();
         TelemetryRegistry::instance().unregister_node(telemetry_.node_id());
         if (server_socket_ >= 0) {
+#ifdef _WIN32
+            closesocket(server_socket_);
+#else
             close(server_socket_);
+#endif
         }
+#ifdef _WIN32
+        WSACleanup();
+#endif
     }
 
     void start() {
-        // создаём сокет и начинаем прослушивание
+
         create_socket();
         bind_socket();
         listen_for_connections();
@@ -67,7 +93,7 @@ public:
         std::cout << "Access log stats: STATS" << std::endl;
         std::cout << "Telemetry: TELEMETRY | TELEMETRY CLUSTER" << std::endl;
         std::cout << "Rotate log: ROTATE" << std::endl;
-        // стартуем дисплей телеметрии и начинаем принимать клиентов
+
         telemetry_display_.start(running_);
         accept_clients();
     }
@@ -76,82 +102,135 @@ public:
         running_ = false;
         telemetry_display_.stop();
         if (server_socket_ >= 0) {
+#ifdef _WIN32
+            closesocket(server_socket_);
+#else
             close(server_socket_);
+#endif
             server_socket_ = -1;
         }
     }
 
 private:
     void create_socket() {
+#ifdef _WIN32
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) {
+            throw std::runtime_error("Failed to create socket");
+        }
+        server_socket_ = static_cast<int>(s);
+#else
         server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
         if (server_socket_ < 0) {
             throw std::runtime_error("Failed to create socket");
         }
+#endif
 
         int opt = 1;
-        // Позволяет быстро перезапускать сервер
+
+#ifdef _WIN32
+        setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR,
+                   reinterpret_cast<const char*>(&opt), sizeof(opt));
+#else
         setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
     }
 
     void bind_socket() {
-        // Привязка сокета к порту
+
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port = htons(static_cast<uint16_t>(port_));
 
+#ifdef _WIN32
+        if (bind(server_socket_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+            throw std::runtime_error("Failed to bind socket");
+        }
+#else
         if (bind(server_socket_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
             throw std::runtime_error("Failed to bind socket");
         }
+#endif
     }
 
     void listen_for_connections() {
-        // до 5 клиентов
+
+#ifdef _WIN32
+        if (listen(server_socket_, 5) == SOCKET_ERROR) {
+            throw std::runtime_error("Failed to listen");
+        }
+#else
         if (listen(server_socket_, 5) < 0) {
             throw std::runtime_error("Failed to listen");
         }
+#endif
     }
 
     void accept_clients() {
         while (running_) {
             struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            // ждём пока кто то подключится
-            int client_socket = accept(server_socket_, reinterpret_cast<struct sockaddr*>(&client_addr), &client_len);
+            int client_len = sizeof(client_addr);
+
+#ifdef _WIN32
+            SOCKET cs = accept(server_socket_,
+                               reinterpret_cast<struct sockaddr*>(&client_addr),
+                               &client_len);
+            if (cs == INVALID_SOCKET) {
+                continue;
+            }
+            int client_socket = static_cast<int>(cs);
+#else
+            socklen_t slen = sizeof(client_addr);
+            int client_socket = accept(server_socket_,
+                                       reinterpret_cast<struct sockaddr*>(&client_addr),
+                                       &slen);
             if (client_socket < 0) {
                 continue;
             }
-            // генерирует идентификаторы
+#endif
+
+
             std::string client_id = IDGenerator::generate_client_id();
             std::string handler_id = IDGenerator::generate_handler_id();
 
-            std::cout << "New client connected: " << client_id << " (handler: " << handler_id << ")" << std::endl;
-            // создаём поток и отделяем его
-            std::thread(&LoggedDBServer::handle_client, this, client_socket, client_id, handler_id).detach();
+            std::cout << "New client connected: " << client_id
+                      << " (handler: " << handler_id << ")" << std::endl;
+
+
+            std::thread(&LoggedDBServer::handle_client, this, client_socket,
+                        client_id, handler_id).detach();
         }
     }
 
-    // отправляем ответ клиенту
+
     void send_response(int client_socket, const std::string& response) {
         std::string resp = response + "\n";
+#ifdef _WIN32
+        send(client_socket, resp.c_str(), static_cast<int>(resp.size()), 0);
+#else
         send(client_socket, resp.c_str(), resp.size(), 0);
+#endif
     }
 
-    // обработка запроса
+
     void handle_client(int client_socket, const std::string& client_id, const std::string& handler_id) {
         char buffer[BUFFER_SIZE];
-        // сессия клиента хранит имя, токен и права
+
         ClientSession session;
 
         while (running_) {
             memset(buffer, 0, sizeof(buffer));
 
-            // полуачем запрос
+
+#ifdef _WIN32
+            int bytes = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+            if (bytes <= 0) break;
+#else
             ssize_t bytes = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-            if (bytes <= 0) {
-                break;
-            }
+            if (bytes <= 0) break;
+#endif
 
             std::string query(buffer);
             if (!query.empty() && query.back() == '\n') {
@@ -160,11 +239,11 @@ private:
 
             std::cout << "[" << client_id << "] Processing: " << query << std::endl;
 
-            // команды администратора TELEMETRY и тд
+
             const std::string admin_cmd = admin_command_name(query);
             AccessLogger::QueryLogger query_logger(&logger_, query, client_id, handler_id);
             const bool internal_cmd = is_admin_command(query);
-            // телеметрия запроса
+
             RequestTelemetryScope telemetry_scope(internal_cmd ? nullptr : &telemetry_);
 
             int status_code = 200;
@@ -172,15 +251,15 @@ private:
             std::string error_message;
 
             try {
-                // парсинг сообщения
+
                 SQLParser parser;
                 auto parsed = parser.parse(query);
 
-                // если это LOGIN или SET TOKEN
+
                 if (auth_.is_auth_command(parsed.type)) {
                     response = auth_.handle_auth_command(parsed, session).dump();
                 } else if (internal_cmd) {
-                    // проверяем есть ли логин, доступ и проверяем команды
+
                     if (!auth_.require_auth(session)) {
                         throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
                     }
@@ -204,7 +283,7 @@ private:
                     if (!auth_.require_auth(session)) {
                         throw std::runtime_error("Authentication required. Use LOGIN and SET TOKEN");
                     }
-                    // выполнение запроса
+
                     auto result = executor_.execute(query, session, auth_.checker());
                     response = result.to_json();
                 }
@@ -212,7 +291,8 @@ private:
                 status_code = 500;
                 error_message = e.what();
                 if (error_message.find("Authentication required") != std::string::npos ||
-                    error_message.find("Invalid") != std::string::npos && error_message.find("token") != std::string::npos) {
+                    (error_message.find("Invalid") != std::string::npos &&
+                     error_message.find("token") != std::string::npos)) {
                     status_code = 401;
                 } else if (error_message.find("Permission denied") != std::string::npos) {
                     status_code = 403;
@@ -232,7 +312,11 @@ private:
             send_response(client_socket, response);
         }
 
+#ifdef _WIN32
+        closesocket(client_socket);
+#else
         close(client_socket);
+#endif
 
         std::cout << "Client disconnected: " << client_id << std::endl;
     }
@@ -243,15 +327,9 @@ int main(int argc, char* argv[]) {
     std::string log_file = "access.log";
     std::string node_id;
 
-    if (argc > 1) {
-        port = std::stoi(argv[1]);
-    }
-    if (argc > 2) {
-        log_file = argv[2];
-    }
-    if (argc > 3) {
-        node_id = argv[3];
-    }
+    if (argc > 1) port = std::stoi(argv[1]);
+    if (argc > 2) log_file = argv[2];
+    if (argc > 3) node_id = argv[3];
 
     try {
         LoggedDBServer server(port, log_file, node_id);

@@ -5,7 +5,7 @@
 #include "jwt.hpp"
 #include "permissions.hpp"
 #include "../parser.hpp"
-#include "../json.hpp"
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <stdexcept>
 #include <string>
